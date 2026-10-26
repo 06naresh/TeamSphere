@@ -1,260 +1,349 @@
-import { useMemo, useState } from "react";
 
-import Card from "../components/Card";
-import EmployeeCard from "../components/EmployeeCard";
+import { useMemo, useState } from "react";
+import {
+  Plus,
+  Search,
+  Users,
+  UserCheck,
+  Building2,
+} from "lucide-react";
+
+import Modal from "../components/ui/Modal";
+import ConfirmDialog from "../components/ui/ConfirmDialog";
+
 import EmployeeForm, {
   type EmployeeFormValues,
-} from "../components/EmployeeForm";
-import GenericList from "../components/GenericList";
-import PrimaryButton from "../components/PrimaryButton";
-import SearchBox from "../components/SearchBox";
+} from "../features/employees/components/EmployeeForm";
 
-import { getEmployees } from "../lib/api";
-import { toEmployeeview } from "../features/employees/employeeMapper";
+import EmployeeTable from "../features/employees/components/EmployeeTable";
 import { useEmployees } from "../features/employees/EmployeeContext";
 
-import type {
-  EmployeeView,
-  NewEmployee,
-} from "../types/employee";
+import type { EmployeeView } from "../types/employee";
 
 export default function DirectoryPage() {
+  // Get employee state and reducer actions from the shared context.
   const { state, dispatch } = useEmployees();
 
-  const [query, setQuery] = useState("");
-  const [department, setDepartment] = useState("All");
-  const [formOpen, setFormOpen] = useState(false);
-  const [editingEmployee, setEditingEmployee] =
-    useState<EmployeeView | undefined>(undefined);
-
-  const employees =
+  // Use employees fetched from the API once loading succeeds.
+  const employees: EmployeeView[] =
     state.status === "success" ? state.employees : [];
 
-  const departments = useMemo(
+  // Search, filter, and dialog state.
+  const [search, setSearch] = useState("");
+  const [department, setDepartment] = useState("All departments");
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<EmployeeView | undefined>();
+  const [deleting, setDeleting] = useState<EmployeeView | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [pageError, setPageError] = useState("");
+
+  // Add an employee to the current application state.
+  const addEmployee = async (values: EmployeeFormValues) => {
+    const newEmployee: EmployeeView = {
+      id: Date.now(),
+      displayName: values.displayName,
+      email: values.email,
+      department: values.department,
+      age: 0,
+      jobTitle: "Not specified",
+      city: "Not specified",
+      phone: "",
+      avatar: "",
+      skills: [],
+      manager: null,
+    };
+
+    dispatch({
+      type: "add",
+      employee: newEmployee,
+    });
+  };
+
+  // Update an existing employee in the current application state.
+  const updateEmployee = async (
+    id: EmployeeView["id"],
+    values: EmployeeFormValues
+  ) => {
+    dispatch({
+      type: "update",
+      id,
+      changes: {
+        displayName: values.displayName,
+        email: values.email,
+        department: values.department,
+      },
+    });
+  };
+
+  // Delete an employee from the current application state.
+  const deleteEmployee = async (id: EmployeeView["id"]) => {
+    dispatch({
+      type: "delete",
+      id,
+    });
+  };
+
+  // Filter employees by name, email, and department.
+  const filteredEmployees = useMemo(() => {
+    const term = search.toLowerCase().trim();
+
+    return employees.filter((employee) => {
+      const matchesSearch =
+        employee.displayName.toLowerCase().includes(term) ||
+        employee.email.toLowerCase().includes(term) ||
+        employee.department.toLowerCase().includes(term);
+
+      const matchesDepartment =
+        department === "All departments" ||
+        employee.department === department;
+
+      return matchesSearch && matchesDepartment;
+    });
+  }, [employees, search, department]);
+
+  // Build department options from the employee data.
+  const departmentOptions = useMemo(
     () => [
-      "All",
+      "All departments",
       ...new Set(employees.map((employee) => employee.department)),
     ],
     [employees]
   );
 
-  const filteredEmployees = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-
-    return employees.filter((employee) => {
-      const matchesSearch = [
-        employee.displayName,
-        employee.email,
-        employee.jobTitle,
-        employee.department,
-      ].some((value) =>
-        value.toLowerCase().includes(normalizedQuery)
-      );
-
-      const matchesDepartment =
-        department === "All" ||
-        employee.department === department;
-
-      return matchesSearch && matchesDepartment;
-    });
-  }, [employees, query, department]);
-
-  function openAddForm() {
-    setEditingEmployee(undefined);
+  function openAddDialog() {
+    setEditing(undefined);
+    setPageError("");
     setFormOpen(true);
   }
 
-  function handleEdit(employee: EmployeeView) {
-    setEditingEmployee(employee);
+  function openEditDialog(employee: EmployeeView) {
+    setEditing(employee);
+    setPageError("");
     setFormOpen(true);
   }
 
-  function handleDelete(id: number) {
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this employee?"
-    );
-
-    if (confirmed) {
-      dispatch({ type: "delete", id });
-    }
-  }
-
-  function handleSave(values: EmployeeFormValues) {
-    const employeeFields: NewEmployee = {
-      displayName: values.displayName.trim(),
-      email: values.email.trim(),
-      age: Number(values.age),
-      department: values.department,
-      jobTitle: values.jobTitle.trim(),
-      city: values.city.trim(),
-      phone: values.phone.trim(),
-      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(
-        values.displayName
-      )}`,
-      skills: [],
-      manager: null,
-    };
-
-    if (editingEmployee) {
-      dispatch({
-        type: "update",
-        id: editingEmployee.id,
-        changes: employeeFields,
-      });
-    } else {
-
-      dispatch({
-        type: "add",
-        employee: {
-          ...employeeFields,
-          id: Date.now(),
-        },
-      });
-    }
-
-    setFormOpen(false);
-    setEditingEmployee(undefined);
-  }
-
-  async function handleRetry() {
-    dispatch({ type: "load-start" });
+  // Save a new employee or update an existing employee.
+  async function handleSave(values: EmployeeFormValues) {
+    setBusy(true);
+    setPageError("");
 
     try {
-      const data = await getEmployees();
+      if (editing) {
+        await updateEmployee(editing.id, values);
+      } else {
+        await addEmployee(values);
+      }
 
-      dispatch({
-        type: "load-success",
-        employees: data.map(toEmployeeview),
-      });
+      setFormOpen(false);
+      setEditing(undefined);
     } catch (error: unknown) {
-      dispatch({
-        type: "load-error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Unable to load employees.",
-      });
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unable to save employee.";
+
+      setPageError(message);
+      throw error;
+    } finally {
+      setBusy(false);
     }
   }
 
-  if (state.status === "loading") {
-    return (
-      <div className="status-panel">
-        <div className="spinner" />
-        <h2>Loading employees...</h2>
-        <p>Fetching the employee directory.</p>
-      </div>
-    );
-  }
+  // Delete the selected employee.
+  async function handleDelete() {
+    if (!deleting) return;
 
-  if (state.status === "error") {
-    return (
-      <div className="status-panel">
-        <h2>We couldn't load employees</h2>
-        <p>{state.message}</p>
-        <PrimaryButton onClick={() => void handleRetry()}>
-          Try again
-        </PrimaryButton>
-      </div>
-    );
+    setBusy(true);
+    setPageError("");
+
+    try {
+      await deleteEmployee(deleting.id);
+      setDeleting(undefined);
+    } catch (error: unknown) {
+      setPageError(
+        error instanceof Error
+          ? error.message
+          : "Unable to delete employee."
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
-    <div className="page">
-      <section className="welcome-section">
+    <>
+      <section className="page-intro">
         <div>
-          <p className="eyebrow">PEOPLE OPERATIONS</p>
-          <h1>Employee directory</h1>
-          <p className="page-description">
-            Manage your people, discover teams, and keep
-            employee information organized.
+          <div className="eyebrow">
+            <span />
+            PEOPLE & CULTURE
+          </div>
+
+          <h2>
+            Your people, <span>all in one place.</span>
+          </h2>
+
+          <p>
+            Manage your team, discover employee details, and keep information
+            up to date.
           </p>
         </div>
 
-        <PrimaryButton onClick={openAddForm}>
-          + Add employee
-        </PrimaryButton>
+        <button
+          className="button button-primary add-button"
+          onClick={openAddDialog}
+        >
+          <Plus size={18} />
+          Add employee
+        </button>
       </section>
 
-      <section className="stats-grid">
-        <Card>
-          <p className="stat-label">Total employees</p>
-          <h2 className="stat-value">{employees.length}</h2>
-          <p className="stat-note">In your directory</p>
-        </Card>
-
-        <Card>
-          <p className="stat-label">Departments</p>
-          <h2 className="stat-value">
-            {departments.length - 1}
-          </h2>
-          <p className="stat-note">Teams represented</p>
-        </Card>
-
-        <Card>
-          <p className="stat-label">Search results</p>
-          <h2 className="stat-value">
-            {filteredEmployees.length}
-          </h2>
-          <p className="stat-note">
-            Matching your current filters
-          </p>
-        </Card>
-      </section>
-
-      {formOpen && (
-        <Card className="form-card">
-          <EmployeeForm
-            employee={editingEmployee}
-            onSave={handleSave}
-            onCancel={() => {
-              setFormOpen(false);
-              setEditingEmployee(undefined);
-            }}
-          />
-        </Card>
+      {/* Loading and API error states */}
+      {state.status === "loading" && (
+        <p role="status" className="loading-message">
+          Loading employees...
+        </p>
       )}
 
-      <Card className="directory-panel">
-        <div className="directory-toolbar">
+      {state.status === "error" && (
+        <p className="inline-error" role="alert">
+          {state.message}
+        </p>
+      )}
+
+      <section className="stats-grid">
+        <article className="stat-card stat-indigo">
+          <div className="stat-top">
+            <span>Total employees</span>
+            <div className="stat-icon">
+              <Users size={20} />
+            </div>
+          </div>
+
+          <strong>{employees.length}</strong>
+          <small>Across your organization</small>
+        </article>
+
+        <article className="stat-card stat-emerald">
+          <div className="stat-top">
+            <span>Active members</span>
+            <div className="stat-icon">
+              <UserCheck size={20} />
+            </div>
+          </div>
+
+          <strong>{employees.length}</strong>
+          <small>Team members in the directory</small>
+        </article>
+
+        <article className="stat-card stat-cyan">
+          <div className="stat-top">
+            <span>Departments</span>
+            <div className="stat-icon">
+              <Building2 size={20} />
+            </div>
+          </div>
+
+          <strong>{Math.max(0, departmentOptions.length - 1)}</strong>
+          <small>Unique departments</small>
+        </article>
+      </section>
+
+      <section className="directory-panel">
+        <div className="directory-heading">
           <div>
-            <h2>All employees</h2>
-            <p>Search, filter, and manage your team.</p>
+            <h3>Employee directory</h3>
+            <p>Browse and manage your team members.</p>
           </div>
 
-          <div className="filter-controls">
-            <SearchBox onSearch={setQuery} />
-
-            <select
-              className="input department-select"
-              value={department}
-              aria-label="Filter by department"
-              onChange={(event) =>
-                setDepartment(event.currentTarget.value)
-              }
-            >
-              {departments.map((name) => (
-                <option key={name} value={name}>
-                  {name === "All" ? "All departments" : name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <span className="count-pill">
+            {filteredEmployees.length} people
+          </span>
         </div>
 
-        <GenericList
-          items={filteredEmployees}
-          getkey={(employee) => employee.id}
-          emptyMessage="No employees match your search."
-          renderItem={(employee) => (
-            <EmployeeCard
-              employee={employee}
-              onEdit={handleEdit}
-              onDelete={handleDelete}
+        <div className="directory-toolbar">
+          <label className="directory-search">
+            <Search size={18} />
+
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search name, email, or department..."
             />
-          )}
+          </label>
+
+          <select
+            className="department-select"
+            value={department}
+            onChange={(event) => setDepartment(event.target.value)}
+            aria-label="Filter by department"
+          >
+            {departmentOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {pageError && (
+          <p className="inline-error" role="alert">
+            {pageError}
+          </p>
+        )}
+
+        <EmployeeTable
+          employees={filteredEmployees}
+          onEdit={openEditDialog}
+          onDelete={(employee) => {
+            setPageError("");
+            setDeleting(employee);
+          }}
         />
-      </Card>
-    </div>
+      </section>
+
+      {/* Add and edit employee modal */}
+      <Modal
+        open={formOpen}
+        title={editing ? "Edit employee" : "Add a new employee"}
+        description={
+          editing
+            ? "Update the details for this team member."
+            : "Add someone new to your TeamSphere workspace."
+        }
+        onClose={() => {
+          if (!busy) {
+            setFormOpen(false);
+            setEditing(undefined);
+          }
+        }}
+      >
+        <EmployeeForm
+          key={editing?.id ?? "new-employee"}
+          initialEmployee={editing}
+          busy={busy}
+          onCancel={() => {
+            if (!busy) {
+              setFormOpen(false);
+              setEditing(undefined);
+            }
+          }}
+          onSubmit={handleSave}
+        />
+      </Modal>
+
+      {/* Delete confirmation dialog */}
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        employeeName={deleting?.displayName ?? ""}
+        busy={busy}
+        onCancel={() => {
+          if (!busy) {
+            setDeleting(undefined);
+          }
+        }}
+        onConfirm={handleDelete}
+      />
+    </>
   );
 }
